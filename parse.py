@@ -77,63 +77,74 @@ import requests
 import psycopg2
 from psycopg2 import sql
 
-# Настройки подключения к базе данных из docker-compose
 DB_CONFIG = {
     "dbname": "pg_db",
     "user": "postgres",
     "password": "postgres",
-    "host": "db",
-    "port": "5432"
+    "host": "localhost",
+    "port": 5432,
 }
 
-# URL API для получения категорий отелей
-API_URL = "http://api-gateway.travelata.ru/directory/hotelCategories"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-}
+HOTEL_CATEGORIES_API_URL = "http://api-gateway.travelata.ru/directory/hotelCategories"
+MEAL_TYPES_API_URL = "https://api-gateway.travelata.ru/directory/meals"
 
-def fetch_hotel_categories():
-    """Запрашивает категории отелей из API Travelata."""
+def fetch_data(api_url):
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        response = requests.get(API_URL, headers=HEADERS)
+        response = requests.get(api_url, headers=headers)
         response.raise_for_status()
         data = response.json()
+        
         if data.get("success"):
             return data.get("data", [])
         else:
-            print("Ошибка API:", data.get("message", "Неизвестная ошибка"))
+            print("Ошибка API:", data.get("message", "Unknown error"))
+            return []
     except requests.exceptions.RequestException as e:
         print("Ошибка запроса:", e)
-    return []
+        return []
 
-def save_to_database(categories):
-    """Сохраняет категории отелей в базу данных PostgreSQL."""
+def insert_into_db(table_name, data):
+    conn = None
     try:
         conn = psycopg2.connect(**DB_CONFIG)
-        cursor = conn.cursor()
+        cur = conn.cursor()
         
-        insert_query = sql.SQL("""
-            INSERT INTO hotel_categories (id, name) 
-            VALUES (%s, %s) 
-            ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
-        """)
-        
-        for category in categories:
-            cursor.execute(insert_query, (category["id"], category["name"]))
+        for item in data:
+            try:
+                cur.execute(
+                    sql.SQL("""
+                        INSERT INTO {} (id, name)
+                        VALUES (%s, %s)
+                        ON CONFLICT (id) DO NOTHING;
+                    """).format(sql.Identifier(table_name)),
+                    (item["id"], item["name"])
+                )
+            except Exception as e:
+                print(f"Ошибка при добавлении {item['name']} в {table_name}: {e}")
         
         conn.commit()
-        cursor.close()
-        conn.close()
-        print("Данные успешно сохранены в базе данных.")
-    except psycopg2.Error as e:
-        print("Ошибка базы данных:", e)
-
-def main():
-    categories = fetch_hotel_categories()
-    if categories:
-        save_to_database(categories)
-    else:
-        print("Нет данных для сохранения.")
+        cur.close()
+        print(f"Данные успешно загружены в таблицу {table_name}.")
+    except Exception as e:
+        print("Ошибка при работе с базой данных:", e)
+    finally:
+        if conn:
+            conn.close()
 
 if __name__ == "__main__":
-    main()
+    print("Получение категорий отелей...")
+    hotel_categories = fetch_data(HOTEL_CATEGORIES_API_URL)
+    if hotel_categories:
+        print(f"Найдено {len(hotel_categories)} категорий. Добавление в базу данных...")
+        insert_into_db("hotel_categories", hotel_categories)
+    else:
+        print("Нет данных для добавления.")
+    
+    print("\nПолучение типов питания...")
+    meal_types = fetch_data(MEAL_TYPES_API_URL)
+    if meal_types:
+        print(f"Найдено {len(meal_types)} типов питания. Добавление в базу данных...")
+        insert_into_db("meal_types", meal_types)
+    else:
+        print("Нет данных для добавления.")
